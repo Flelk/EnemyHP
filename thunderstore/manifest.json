@@ -1,0 +1,9 @@
+{
+  "name": "EnemyHP",
+  "version_number": "1.0.0",
+  "website_url": "",
+  "description": "Client-side: enemy health bars and floating damage numbers. Works as host or guest; only you need it.",
+  "dependencies": [
+    "BepInEx-BepInExPack-5.4.2305"
+  ]
+}
