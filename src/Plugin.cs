@@ -33,7 +33,7 @@ public class Plugin : BaseUnityPlugin
         AimRange = Config.Bind("Health bar", "AimRange", 30f,
             new ConfigDescription("Max distance (meters) for showing a bar when aiming.", new AcceptableValueRange<float>(5f, 100f)));
         RecentHitSeconds = Config.Bind("Health bar", "ShowAfterHitSeconds", 5f,
-            new ConfigDescription("Keep the bar visible this long after the enemy is hit.", new AcceptableValueRange<float>(0f, 30f)));
+            new ConfigDescription("Keep the bar up this long after the enemy is hit, while you can still see the enemy.", new AcceptableValueRange<float>(0f, 30f)));
 
         var go = new GameObject("EnemyHP");
         go.hideFlags = HideFlags.HideAndDontSave;

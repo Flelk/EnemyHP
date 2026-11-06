@@ -20,7 +20,10 @@ internal class Hud : MonoBehaviour
     const float PopupLife = 1.15f;
 
     static readonly List<Popup> popups = new();
-    static Texture2D white;
+    const int RoundedSize = 64, RoundedCorner = 16;
+
+    static readonly RaycastHit[] hitBuffer = new RaycastHit[32];
+    static Texture2D rounded;
     static GUIStyle textStyle;
     float nextScan;
 
@@ -29,6 +32,12 @@ internal class Hud : MonoBehaviour
     internal static void SpawnPopup(Tracked t, int amount, bool kill)
     {
         if (!Plugin.ShowDamage.Value || t.Enemy == null) return;
+
+        // No numbers for hits you can't see, or they'd give away enemies behind walls.
+        var cam = GetCamera();
+        if (cam == null) return;
+        t.SightCheckAt = 0f;
+        if (!InLineOfSight(cam, t)) return;
 
         float frac = (float)amount / t.Max;
         Color color =
@@ -90,9 +99,11 @@ internal class Hud : MonoBehaviour
 
             if (t.Alpha <= 0f) t.AnchorValid = false; // snap into place next time it appears
 
+            // Line of sight always applies, so a hit can't keep a bar up through a wall.
             bool want = Plugin.ShowBars.Value && cam != null && IsAlive(t) &&
-                        (now - t.LastHit < Plugin.RecentHitSeconds.Value || IsAimedAt(cam, t));
-            t.Alpha = Mathf.MoveTowards(t.Alpha, want ? 1f : 0f, dt * (want ? 8f : 3f));
+                        (now - t.LastHit < Plugin.RecentHitSeconds.Value || IsAimedAt(cam, t)) &&
+                        InLineOfSight(cam, t);
+            t.Alpha = Mathf.MoveTowards(t.Alpha, want ? 1f : 0f, dt * (want ? 8f : 6f));
         }
 
         popups.RemoveAll(p => now - p.Born > PopupLife);
@@ -133,24 +144,63 @@ internal class Hud : MonoBehaviour
         return Camera.main;
     }
 
+    static Vector3 CenterOf(Tracked t) =>
+        t.Enemy.CenterTransform ? t.Enemy.CenterTransform.position : t.Enemy.transform.position;
+
     static bool IsAimedAt(Camera cam, Tracked t)
     {
-        var target = t.Enemy.CenterTransform ? t.Enemy.CenterTransform.position : t.Enemy.transform.position;
-        var from = cam.transform.position;
-        var dir = target - from;
+        var dir = CenterOf(t) - cam.transform.position;
         float dist = dir.magnitude;
         if (dist > Plugin.AimRange.Value || dist < 0.01f) return false;
-        if (Vector3.Angle(cam.transform.forward, dir) > Plugin.AimAngle.Value) return false;
 
-        // Line of sight: no bars through walls.
+        // Up close an enemy fills the view, so its center can be well off the crosshair.
+        float angle = Mathf.Max(Plugin.AimAngle.Value, Mathf.Atan2(0.8f, dist) * Mathf.Rad2Deg);
+        return Vector3.Angle(cam.transform.forward, dir) <= angle;
+    }
+
+    // Visible if a ray reaches its head, middle or lower body, so a small prop can't hide a whole enemy.
+    static bool InLineOfSight(Camera cam, Tracked t)
+    {
+        float now = Time.unscaledTime;
+        if (now < t.SightCheckAt) return t.InSight;
+        t.SightCheckAt = now + 0.1f;
+
+        var from = cam.transform.position;
+        var center = CenterOf(t);
+        TopOf(t); // refreshes TopOffset
         int mask = t.Enemy.VisionMask.value != 0 ? t.Enemy.VisionMask.value : Physics.DefaultRaycastLayers;
-        if (Physics.Raycast(from, dir / dist, out var hit, dist, mask, QueryTriggerInteraction.Ignore))
+        t.InSight = RayReaches(from, center, t, mask)
+                 || RayReaches(from, center + Vector3.up * (t.TopOffset * 0.85f), t, mask)
+                 || RayReaches(from, center - Vector3.up * (t.TopOffset * 0.5f), t, mask);
+        return t.InSight;
+    }
+
+    // Finds the nearest thing on the ray, ignoring players (including your own body).
+    static bool RayReaches(Vector3 from, Vector3 to, Tracked t, int mask)
+    {
+        var dir = to - from;
+        float dist = dir.magnitude;
+        if (dist < 0.01f) return true;
+
+        int count = Physics.RaycastNonAlloc(from, dir / dist, hitBuffer, dist, mask, QueryTriggerInteraction.Ignore);
+        Collider nearest = null;
+        float best = float.MaxValue;
+        for (int i = 0; i < count; i++)
         {
-            if (hit.collider.GetComponentInParent<Enemy>() == t.Enemy) return true;
-            if (hit.collider.GetComponentInParent<PlayerAvatar>() != null) return true; // our own body
-            return false;
+            var hit = hitBuffer[i];
+            if (hit.distance >= best) continue;
+            if (hit.collider.GetComponentInParent<PlayerAvatar>() != null) continue;
+            if (hit.collider.GetComponentInParent<PlayerTumble>() != null) continue;
+            best = hit.distance;
+            nearest = hit.collider;
         }
-        return true;
+        if (nearest == null) return true;
+
+        // The enemy's own body counts as seeing it. Anything else is in the way.
+        var parent = t.Enemy.EnemyParent;
+        return parent != null
+            ? nearest.GetComponentInParent<EnemyParent>() == parent
+            : nearest.GetComponentInParent<Enemy>() == t.Enemy;
     }
 
     // Follows the enemy live; only the (costlier) head height is sampled from the meshes.
@@ -260,37 +310,37 @@ internal class Hud : MonoBehaviour
 
         float dist = Vector3.Distance(cam.transform.position, t.Anchor);
         float k = scale * Mathf.Lerp(1f, 0.65f, Mathf.InverseLerp(4f, 30f, dist));
-        float w = 124f * k, h = 9f * k;
         float a = t.Alpha;
-        var bar = new Rect(pos.x - w / 2f, pos.y - h / 2f, w, h);
 
-        // Frame + background
-        Fill(new Rect(bar.x - 2, bar.y - 2, bar.width + 4, bar.height + 4), new Color(0f, 0f, 0f, 0.55f * a));
-        Fill(bar, new Color(0.12f, 0.12f, 0.14f, 0.85f * a));
+        // Whole pixels keep the frame crisp. The fill stays fractional so it moves smoothly.
+        float w = Mathf.Round(190f * k), h = Mathf.Round(20f * k);
+        float border = Mathf.Max(2f, Mathf.Round(2.5f * k));
+        float radius = Mathf.Max(3f, Mathf.Round(5f * k));
+        var bar = new Rect(Mathf.Round(pos.x - w / 2f), Mathf.Round(pos.y - h / 2f), w, h);
 
-        // Trailing damage chunk, then the real fill
+        // Soft shadow, black frame, dark inside
+        Rounded(new Rect(bar.x, bar.y + Mathf.Max(1f, 2f * k), w, h), radius, new Color(0f, 0f, 0f, 0.3f * a));
+        Rounded(bar, radius, new Color(0.02f, 0.02f, 0.03f, 0.95f * a));
+        var inner = new Rect(bar.x + border, bar.y + border, w - border * 2f, h - border * 2f);
+        float innerRadius = Mathf.Max(1f, radius - border);
+        Rounded(inner, innerRadius, new Color(0.13f, 0.13f, 0.16f, 0.92f * a));
+
+        // Trailing damage chunk, the real fill, then a sheen across the top half
         float f = t.Display;
         if (t.Ghost > f)
-            Fill(new Rect(bar.x, bar.y, bar.width * t.Ghost, bar.height), new Color(1f, 0.92f, 0.85f, 0.75f * a));
-        var fillColor = HealthColor(f);
-        var fill = new Rect(bar.x, bar.y, bar.width * f, bar.height);
-        Fill(fill, new Color(fillColor.r, fillColor.g, fillColor.b, a));
-        // Top highlight for a bit of depth
-        Fill(new Rect(fill.x, fill.y, fill.width, Mathf.Max(1f, h * 0.3f)), new Color(1f, 1f, 1f, 0.18f * a));
-        // Quarter ticks
-        for (int i = 1; i < 4; i++)
-            Fill(new Rect(bar.x + bar.width * i / 4f, bar.y, 1f, bar.height), new Color(0f, 0f, 0f, 0.35f * a));
+            Rounded(inner, innerRadius, new Color(1f, 0.93f, 0.86f, 0.8f * a), inner.width * t.Ghost);
+        var c = HealthColor(f);
+        Rounded(inner, innerRadius, new Color(c.r, c.g, c.b, a), inner.width * f);
+        Rounded(new Rect(inner.x, inner.y, inner.width, Mathf.Round(inner.height * 0.45f)), innerRadius,
+            new Color(1f, 1f, 1f, 0.16f * a), inner.width * f);
 
-        // Name (left) and HP (right) above the bar
-        int fs = Mathf.RoundToInt(13f * k);
+        // HP on the left, name on the right, both above the bar
+        int fs = Mathf.RoundToInt(15f * k);
         float lineH = fs + 6f;
-        var line = new Rect(bar.x, bar.y - lineH - 1f, bar.width, lineH);
+        var line = new Rect(bar.x + 1f, bar.y - lineH - 2f, w - 2f, lineH);
+        Text(line, $"{Mathf.RoundToInt(f * t.Max)}/{t.Max}", fs, TextAnchor.LowerLeft, new Color(1f, 1f, 1f, a), a);
         if (Plugin.ShowNames.Value)
-        {
-            Text(line, NameOf(t), fs, TextAnchor.LowerLeft, new Color(1f, 1f, 1f, 0.9f * a), a);
-        }
-        Text(line, $"{Mathf.RoundToInt(f * t.Max)} / {t.Max}", fs, Plugin.ShowNames.Value ? TextAnchor.LowerRight : TextAnchor.LowerCenter,
-            new Color(1f, 1f, 1f, 0.95f * a), a);
+            Text(line, NameOf(t), fs, TextAnchor.LowerRight, new Color(1f, 1f, 1f, 0.92f * a), a);
     }
 
     static void DrawPopup(Camera cam, Popup p, float now, float scale)
@@ -328,19 +378,64 @@ internal class Hud : MonoBehaviour
 
     static void EnsureResources()
     {
-        if (white == null)
-        {
-            white = new Texture2D(1, 1) { hideFlags = HideFlags.HideAndDontSave };
-            white.SetPixel(0, 0, Color.white);
-            white.Apply();
-        }
+        if (rounded == null) rounded = MakeRoundedTexture();
         textStyle ??= new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, wordWrap = false, clipping = TextClipping.Overflow };
     }
 
-    static void Fill(Rect r, Color c)
+    // White rounded square with smooth edges. Rounded() stretches it without distorting the corners.
+    static Texture2D MakeRoundedTexture()
     {
-        GUI.color = c;
-        GUI.DrawTexture(r, white);
+        var tex = new Texture2D(RoundedSize, RoundedSize, TextureFormat.ARGB32, false)
+        {
+            hideFlags = HideFlags.HideAndDontSave,
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+        };
+        float half = RoundedSize / 2f;
+        for (int y = 0; y < RoundedSize; y++)
+        {
+            for (int x = 0; x < RoundedSize; x++)
+            {
+                float dx = Mathf.Max(Mathf.Abs(x + 0.5f - half) - (half - RoundedCorner), 0f);
+                float dy = Mathf.Max(Mathf.Abs(y + 0.5f - half) - (half - RoundedCorner), 0f);
+                float edge = RoundedCorner - Mathf.Sqrt(dx * dx + dy * dy);
+                tex.SetPixel(x, y, new Color(1f, 1f, 1f, Mathf.Clamp01(edge + 0.5f)));
+            }
+        }
+        tex.Apply();
+        return tex;
+    }
+
+    /// <summary>Draws a rounded rectangle. With visibleWidth, only that much of it from the left, cut off straight.</summary>
+    static void Rounded(Rect r, float radius, Color color, float visibleWidth = -1f)
+    {
+        float visible = visibleWidth < 0f ? r.width : Mathf.Min(visibleWidth, r.width);
+        if (visible <= 0f || r.width <= 0f || r.height <= 0f) return;
+        radius = Mathf.Min(radius, Mathf.Min(r.width, r.height) / 2f);
+
+        float uv = (float)RoundedCorner / RoundedSize;
+        float[] xs = { 0f, radius, r.width - radius, r.width };
+        float[] ys = { 0f, radius, r.height - radius, r.height };
+        float[] us = { 0f, uv, 1f - uv, 1f };
+
+        GUI.color = color;
+        for (int row = 0; row < 3; row++)
+        {
+            if (ys[row + 1] <= ys[row]) continue;
+            for (int col = 0; col < 3; col++)
+            {
+                float x0 = xs[col], x1 = xs[col + 1];
+                if (x1 <= x0) continue;
+                if (x0 >= visible) break;
+
+                float cut = Mathf.Min(x1, visible);
+                float u1 = Mathf.Lerp(us[col], us[col + 1], (cut - x0) / (x1 - x0));
+                GUI.DrawTextureWithTexCoords(
+                    new Rect(r.x + x0, r.y + ys[row], cut - x0, ys[row + 1] - ys[row]),
+                    rounded,
+                    new Rect(us[col], us[row], u1 - us[col], us[row + 1] - us[row]));
+            }
+        }
     }
 
     static readonly Vector2[] OutlineDirs =

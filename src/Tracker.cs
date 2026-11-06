@@ -18,6 +18,8 @@ internal class Tracked
     public bool AnchorValid;
     public float TopOffset;          // cached height of the head above the enemy's center
     public float TopUpdatedAt = -999f;
+    public bool InSight;             // cached line-of-sight result
+    public float SightCheckAt;
     public string Name;              // cached display name
     public bool NameFinal;
     public float NameRetryAt;
