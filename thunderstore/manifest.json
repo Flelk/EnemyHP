@@ -1,6 +1,6 @@
 {
   "name": "EnemyHP",
-  "version_number": "1.0.0",
+  "version_number": "1.1.0",
   "website_url": "",
   "description": "Client-side: enemy health bars and floating damage numbers. Works as host or guest; only you need it.",
   "dependencies": [

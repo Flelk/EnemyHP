@@ -79,9 +79,16 @@ internal class Hud : MonoBehaviour
         {
             if (t.Health == null) continue;
 
-            // Trailing chunk: hold briefly, then slide down to the real value.
-            if (now > t.GhostHoldUntil) t.Ghost = Mathf.MoveTowards(t.Ghost, t.Fraction, dt * 0.9f);
-            if (t.Ghost < t.Fraction) t.Ghost = t.Fraction;
+            // The fill eases to the real value, in either direction.
+            t.Display = Mathf.Lerp(t.Display, t.Fraction, 1f - Mathf.Exp(-14f * dt));
+            if (Mathf.Abs(t.Display - t.Fraction) < 0.0015f) t.Display = t.Fraction;
+
+            // Trailing chunk: hold briefly, then glide down, slowing as it catches up.
+            if (now > t.GhostHoldUntil)
+                t.Ghost = Mathf.MoveTowards(t.Ghost, t.Display, dt * (0.2f + 3.5f * Mathf.Abs(t.Ghost - t.Display)));
+            if (t.Ghost < t.Display) t.Ghost = t.Display;
+
+            if (t.Alpha <= 0f) t.AnchorValid = false; // snap into place next time it appears
 
             bool want = Plugin.ShowBars.Value && cam != null && IsAlive(t) &&
                         (now - t.LastHit < Plugin.RecentHitSeconds.Value || IsAimedAt(cam, t));
@@ -89,6 +96,30 @@ internal class Hud : MonoBehaviour
         }
 
         popups.RemoveAll(p => now - p.Born > PopupLife);
+    }
+
+    // After everything has moved this frame. Horizontal follows closely; height is softer
+    // because mesh bounds wobble with the enemy's animation.
+    void LateUpdate()
+    {
+        float dt = Time.unscaledDeltaTime;
+        foreach (var t in Tracker.All.Values)
+        {
+            if (t.Alpha <= 0f || t.Health == null || t.Enemy == null) continue;
+
+            var target = TopOf(t);
+            if (!t.AnchorValid || (target - t.Anchor).sqrMagnitude > 25f) // first frame or teleport
+            {
+                t.Anchor = target;
+                t.AnchorValid = true;
+                continue;
+            }
+            float xz = 1f - Mathf.Exp(-25f * dt), y = 1f - Mathf.Exp(-9f * dt);
+            t.Anchor = new Vector3(
+                Mathf.Lerp(t.Anchor.x, target.x, xz),
+                Mathf.Lerp(t.Anchor.y, target.y, y),
+                Mathf.Lerp(t.Anchor.z, target.z, xz));
+        }
     }
 
     static bool IsAlive(Tracked t) =>
@@ -122,28 +153,77 @@ internal class Hud : MonoBehaviour
         return true;
     }
 
+    // Follows the enemy live; only the (costlier) head height is sampled from the meshes.
     static Vector3 TopOf(Tracked t)
     {
-        float now = Time.unscaledTime;
-        if (now - t.TopUpdatedAt < 0.2f) return t.Top;
-        t.TopUpdatedAt = now;
-
         var basePos = t.Enemy.CenterTransform ? t.Enemy.CenterTransform.position : t.Enemy.transform.position;
-        float topY = basePos.y + 0.8f;
-        bool any = false;
-        if (t.Health.renderers != null)
+        float now = Time.unscaledTime;
+        if (now - t.TopUpdatedAt >= 0.1f)
         {
-            foreach (var r in t.Health.renderers)
+            t.TopUpdatedAt = now;
+            float topY = basePos.y + 0.8f;
+            bool any = false;
+            if (t.Health.renderers != null)
             {
-                if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
-                topY = any ? Mathf.Max(topY, r.bounds.max.y) : r.bounds.max.y;
-                any = true;
+                foreach (var r in t.Health.renderers)
+                {
+                    if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                    topY = any ? Mathf.Max(topY, r.bounds.max.y) : r.bounds.max.y;
+                    any = true;
+                }
+            }
+            // Clamp so one odd mesh can't send the bar into the sky.
+            t.TopOffset = Mathf.Clamp(topY - basePos.y, 0.3f, 3.5f);
+        }
+        return new Vector3(basePos.x, basePos.y + t.TopOffset + 0.35f, basePos.z);
+    }
+
+    // The name the game itself uses for the enemy, translated to the player's language.
+    static string NameOf(Tracked t)
+    {
+        float now = Time.unscaledTime;
+        if (t.NameFinal || (t.Name != null && now < t.NameRetryAt)) return t.Name;
+        t.NameRetryAt = now + 1f;
+
+        var parent = t.Enemy.EnemyParent != null ? t.Enemy.EnemyParent : t.Enemy.GetComponentInParent<EnemyParent>(true);
+        string name = null;
+        if (parent != null)
+        {
+            // The game's Virus points at the Mentalist's translation, so it keeps its own name.
+            if (parent.enemyName == "Virus")
+            {
+                name = parent.enemyName;
+                t.NameFinal = true;
+            }
+            else
+            {
+                name = Localized(parent);
+                if (name != null) t.NameFinal = true;
+                else if (!string.IsNullOrWhiteSpace(parent.enemyName)) name = parent.enemyName;
             }
         }
-        // Clamp so one odd mesh can't send the bar into the sky.
-        topY = Mathf.Clamp(topY, basePos.y + 0.3f, basePos.y + 3.5f);
-        t.Top = new Vector3(basePos.x, topY + 0.35f, basePos.z);
-        return t.Top;
+        if (name == null)
+        {
+            // Last resort: prefabs are named "Enemy - Duck".
+            string go = t.Enemy.transform.root.name.Replace("(Clone)", "").Trim();
+            name = go.StartsWith("Enemy - ") ? go.Substring(8) : "Enemy";
+        }
+        if (t.Name != name) Plugin.Log.LogInfo($"Name for {t.Enemy.transform.root.name}: {name}");
+        return t.Name = name;
+    }
+
+    static string Localized(EnemyParent parent)
+    {
+        try
+        {
+            string s = parent.enemyNameLocalized?.GetLocalizedString();
+            return string.IsNullOrWhiteSpace(s) || s.StartsWith("No translation found") ? null : s;
+        }
+        catch (System.Exception e)
+        {
+            Plugin.Log.LogWarning($"Couldn't read the name of {parent.enemyName}: {e.Message}");
+            return null;
+        }
     }
 
     // Viewport -> screen keeps this correct with R.E.P.O.'s low-res render texture.
@@ -176,9 +256,9 @@ internal class Hud : MonoBehaviour
 
     static void DrawBar(Camera cam, Tracked t, float scale)
     {
-        if (!ToScreen(cam, TopOf(t), out var pos)) return;
+        if (!t.AnchorValid || !ToScreen(cam, t.Anchor, out var pos)) return;
 
-        float dist = Vector3.Distance(cam.transform.position, t.Top);
+        float dist = Vector3.Distance(cam.transform.position, t.Anchor);
         float k = scale * Mathf.Lerp(1f, 0.65f, Mathf.InverseLerp(4f, 30f, dist));
         float w = 124f * k, h = 9f * k;
         float a = t.Alpha;
@@ -189,7 +269,7 @@ internal class Hud : MonoBehaviour
         Fill(bar, new Color(0.12f, 0.12f, 0.14f, 0.85f * a));
 
         // Trailing damage chunk, then the real fill
-        float f = t.Fraction;
+        float f = t.Display;
         if (t.Ghost > f)
             Fill(new Rect(bar.x, bar.y, bar.width * t.Ghost, bar.height), new Color(1f, 0.92f, 0.85f, 0.75f * a));
         var fillColor = HealthColor(f);
@@ -207,10 +287,9 @@ internal class Hud : MonoBehaviour
         var line = new Rect(bar.x, bar.y - lineH - 1f, bar.width, lineH);
         if (Plugin.ShowNames.Value)
         {
-            string name = t.Enemy.EnemyParent != null ? t.Enemy.EnemyParent.enemyName : "Enemy";
-            Text(line, name.ToUpperInvariant(), fs, TextAnchor.LowerLeft, new Color(1f, 1f, 1f, 0.9f * a), a);
+            Text(line, NameOf(t), fs, TextAnchor.LowerLeft, new Color(1f, 1f, 1f, 0.9f * a), a);
         }
-        Text(line, $"{t.Hp} / {t.Max}", fs, Plugin.ShowNames.Value ? TextAnchor.LowerRight : TextAnchor.LowerCenter,
+        Text(line, $"{Mathf.RoundToInt(f * t.Max)} / {t.Max}", fs, Plugin.ShowNames.Value ? TextAnchor.LowerRight : TextAnchor.LowerCenter,
             new Color(1f, 1f, 1f, 0.95f * a), a);
     }
 
@@ -240,10 +319,10 @@ internal class Hud : MonoBehaviour
         }
     }
 
+    static readonly Color Red = new(1f, 0.32f, 0.27f), Yellow = new(1f, 0.78f, 0.25f), Green = new(0.33f, 0.86f, 0.45f);
+
     static Color HealthColor(float f) =>
-        f > 0.6f ? new Color(0.33f, 0.86f, 0.45f) :
-        f > 0.3f ? new Color(1f, 0.78f, 0.25f) :
-                   new Color(1f, 0.32f, 0.27f);
+        f < 0.5f ? Color.Lerp(Red, Yellow, f / 0.5f) : Color.Lerp(Yellow, Green, (f - 0.5f) / 0.5f);
 
     // ---------- primitives ----------
 

@@ -9,12 +9,18 @@ internal class Tracked
     public Enemy Enemy;
     public int Hp;
     public int Max;
+    public float Display = 1f;        // eased fraction the bar actually draws
     public float Ghost = 1f;          // trailing "damage chunk" fraction of the bar
     public float GhostHoldUntil;
     public float LastHit = -999f;
     public float Alpha;              // current bar opacity (fades in/out)
-    public Vector3 Top;              // cached world position above the enemy's head
+    public Vector3 Anchor;           // smoothed world position the bar is drawn at
+    public bool AnchorValid;
+    public float TopOffset;          // cached height of the head above the enemy's center
     public float TopUpdatedAt = -999f;
+    public string Name;              // cached display name
+    public bool NameFinal;
+    public float NameRetryAt;
     public int RecentHits;           // stacks popups that land at the same moment
     public float RecentHitTime = -999f;
 
@@ -36,7 +42,7 @@ internal static class Tracker
             // Host knows the real value; on guests healthCurrent never changes, so this equals max.
             Hp = Mathf.Clamp(eh.healthCurrent, 0, Mathf.Max(1, eh.health)),
         };
-        t.Ghost = t.Fraction;
+        t.Ghost = t.Display = t.Fraction;
         All[eh] = t;
         return t;
     }
@@ -44,7 +50,7 @@ internal static class Tracker
     internal static void Damage(EnemyHealth eh, int amount, bool killed, int exactHp)
     {
         var t = Get(eh);
-        t.Ghost = Mathf.Max(t.Ghost, t.Fraction);
+        t.Ghost = Mathf.Max(t.Ghost, t.Display);
         t.Hp = exactHp >= 0 ? exactHp : Mathf.Max(0, t.Hp - amount);
         if (killed) t.Hp = 0;
         Hit(t, amount, killed);
@@ -54,7 +60,7 @@ internal static class Tracker
     {
         var t = Get(eh);
         int remaining = t.Hp;
-        t.Ghost = Mathf.Max(t.Ghost, t.Fraction);
+        t.Ghost = Mathf.Max(t.Ghost, t.Display);
         t.Hp = 0;
         Hit(t, remaining, true);
     }
@@ -74,7 +80,7 @@ internal static class Tracker
         var t = Get(eh);
         t.Max = Mathf.Max(1, eh.health);
         t.Hp = t.Max;
-        t.Ghost = 1f;
+        t.Ghost = t.Display = 1f;
         t.LastHit = -999f;
     }
 
@@ -82,7 +88,6 @@ internal static class Tracker
     {
         var t = Get(eh);
         t.Hp = Mathf.Clamp(eh.healthCurrent, 0, t.Max);
-        t.Ghost = Mathf.Max(t.Ghost, t.Fraction);
     }
 
     internal static void Prune()
