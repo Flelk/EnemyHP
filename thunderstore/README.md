@@ -17,6 +17,6 @@ Only the person who installs it sees these. Nobody else in the lobby needs it.
 **Manual:** install BepInExPack, then put `EnemyHP.dll` in `BepInEx\plugins\`.
 
 ## Settings
-These are in `BepInEx\config\gabe.enemyhp.cfg` or r2modman's config editor:
+These are in `BepInEx\config\flelk.enemyhp.cfg` or r2modman's config editor:
 - **Display:** `HealthBars`, `EnemyNames`, `DamageNumbers`, `Scale` (0.5 to 2)
 - **Health bar:** `AimAngle` (default 7°), `AimRange` (default 30 m), `ShowAfterHitSeconds` (default 5)

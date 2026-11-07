@@ -1,5 +1,8 @@
 # Changelog
 
+## 3.0.0
+- Removed personal info from the mod's files. The settings file is now flelk.enemyhp.cfg, so settings go back to their defaults.
+
 ## 2.0.0
 - No more health bars or damage numbers on the Skinwalker, so they can't give away its disguise.
 
