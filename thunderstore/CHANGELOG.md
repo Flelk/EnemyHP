@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.0.0
+- No more health bars or damage numbers on the Skinwalker, so they can't give away its disguise.
+
 ## 1.2.0
 - New health bar: larger, with a black frame and slightly rounded corners. HP sits above it on the left, the name on the right.
 - Bars and damage numbers no longer show through walls, even right after a hit.

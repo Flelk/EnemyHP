@@ -26,6 +26,9 @@ internal class Tracked
     public int RecentHits;           // stacks popups that land at the same moment
     public float RecentHitTime = -999f;
 
+    // The Skinwalker mod names its monster this. A bar or damage number would give away its disguise.
+    public bool IsSkinwalker => Enemy != null && Enemy.EnemyParent != null && Enemy.EnemyParent.enemyName == "Skinwalker";
+
     public float Fraction => Max > 0 ? Mathf.Clamp01((float)Hp / Max) : 0f;
 }
 

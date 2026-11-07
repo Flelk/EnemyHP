@@ -31,7 +31,7 @@ internal class Hud : MonoBehaviour
 
     internal static void SpawnPopup(Tracked t, int amount, bool kill)
     {
-        if (!Plugin.ShowDamage.Value || t.Enemy == null) return;
+        if (!Plugin.ShowDamage.Value || t.Enemy == null || t.IsSkinwalker) return;
 
         // No numbers for hits you can't see, or they'd give away enemies behind walls.
         var cam = GetCamera();
@@ -100,7 +100,7 @@ internal class Hud : MonoBehaviour
             if (t.Alpha <= 0f) t.AnchorValid = false; // snap into place next time it appears
 
             // Line of sight always applies, so a hit can't keep a bar up through a wall.
-            bool want = Plugin.ShowBars.Value && cam != null && IsAlive(t) &&
+            bool want = Plugin.ShowBars.Value && cam != null && IsAlive(t) && !t.IsSkinwalker &&
                         (now - t.LastHit < Plugin.RecentHitSeconds.Value || IsAimedAt(cam, t)) &&
                         InLineOfSight(cam, t);
             t.Alpha = Mathf.MoveTowards(t.Alpha, want ? 1f : 0f, dt * (want ? 8f : 6f));
